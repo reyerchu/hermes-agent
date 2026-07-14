@@ -88,7 +88,7 @@ Configure with `ZT_ACCOUNTS_JSON` (a JSON array, tried in order):
   {"name": "claude2", "provider": "anthropic",
    "credentials_path": "~/.claude/.credentials.account2.json"},
   {"name": "kimi", "provider": "kimi", "token": "sk-...",
-   "model": "kimi-k2-0711-preview"}
+   "model": "kimi-for-coding"}
 ]
 ```
 
@@ -100,7 +100,8 @@ provider whose model ids differ), `send_identity`, `betas`. Omit both
 credentials file plus the env token.
 
 Provider presets: `anthropic` → `api.anthropic.com` with the Claude Code
-identity block + OAuth betas; `kimi` → `api.kimi.com/coding/v1`, no identity
+identity block + OAuth betas; `kimi` → `api.kimi.com/coding` (a plain Kimi
+Code API key, no OAuth beta), no identity
 block; `generic` → `api.anthropic.com`, no identity, no betas.
 
 `GET /health` (authenticated) lists every account with its provider, endpoint,

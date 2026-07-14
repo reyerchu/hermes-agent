@@ -269,10 +269,13 @@ def test_pool_cooldown_expires(monkeypatch):
 
 
 def test_provider_presets_kimi_endpoint_and_no_identity():
-    k = _acct("kimi", "tok", provider="kimi", model="kimi-k2-0711-preview")
-    assert k.base_url == "https://api.kimi.com/coding/v1"
+    k = _acct("kimi", "tok", provider="kimi", model="kimi-for-coding")
+    # base_url must NOT include /v1 — the proxy appends /v1/messages itself.
+    assert k.base_url == "https://api.kimi.com/coding"
     assert k.send_identity is False
-    assert k.model == "kimi-k2-0711-preview"
+    # Kimi authenticates with a plain API key, so no OAuth beta header.
+    assert k.betas == ()
+    assert k.model == "kimi-for-coding"
     assert k.provider == "kimi"
 
 
@@ -283,7 +286,7 @@ def test_pool_from_env_json_builds_mixed_providers(monkeypatch, tmp_path):
             "name": "kimi",
             "provider": "kimi",
             "token": "tok-kimi",
-            "model": "kimi-k2-0711-preview",
+            "model": "kimi-for-coding",
         },
     ]
     monkeypatch.setenv("ZT_ACCOUNTS_JSON", json.dumps(cfg))
@@ -292,8 +295,8 @@ def test_pool_from_env_json_builds_mixed_providers(monkeypatch, tmp_path):
     assert [a.name for a in accts] == ["claude1", "kimi"]
     assert accts[0].provider == "anthropic"
     assert accts[1].provider == "kimi"
-    assert accts[1].base_url == "https://api.kimi.com/coding/v1"
-    assert accts[1].model == "kimi-k2-0711-preview"
+    assert accts[1].base_url == "https://api.kimi.com/coding"
+    assert accts[1].model == "kimi-for-coding"
 
 
 def test_pool_from_env_backup_tokens(monkeypatch):

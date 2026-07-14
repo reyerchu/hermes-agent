@@ -48,8 +48,11 @@ Environment=LOG_LEVEL=INFO
 #
 # Multi-account failover: when the primary account hits "out of extra usage",
 # the proxy rotates to the next account. Configure with a JSON array (primary
-# first). Providers: anthropic (Claude sub), kimi (Kimi Code sub), generic.
-#   Environment=ZT_ACCOUNTS_JSON=[{"name":"claude1","provider":"anthropic"},{"name":"claude2","provider":"anthropic","credentials_path":"%h/.claude/.credentials.account2.json"},{"name":"kimi","provider":"kimi","token":"sk-...","model":"kimi-k2-0711-preview"}]
+# first). Providers: anthropic (Claude sub, OAuth account token), kimi (Kimi
+# Code sub, a plain API key from https://www.kimi.com/code/en), generic.
+# claude2 here uses a static setup-token (claude setup-token); alternatively
+# point it at a second credentials file via "credentials_path".
+#   Environment=ZT_ACCOUNTS_JSON=[{"name":"claude1","provider":"anthropic"},{"name":"claude2","provider":"anthropic","token":"sk-ant-oat01-..."},{"name":"kimi","provider":"kimi","token":"<KIMI_API_KEY>","model":"kimi-for-coding"}]
 
 Restart=always
 RestartSec=5

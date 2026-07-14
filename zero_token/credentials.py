@@ -429,11 +429,14 @@ PROVIDER_PRESETS: dict[str, dict[str, Any]] = {
         "send_identity": True,
         "betas": ("claude-code-20250219", "oauth-2025-04-20"),
     },
-    # Kimi Code subscription (Moonshot). Anthropic-compatible /v1/messages.
+    # Kimi Code subscription (Moonshot). Anthropic-compatible: the coding
+    # endpoint lives at https://api.kimi.com/coding and serves /v1/messages
+    # (base_url must NOT already include /v1 — the proxy appends it). Auth is a
+    # plain Kimi Code *API key* (Bearer), not an OAuth token, so no oauth beta.
     "kimi": {
-        "base_url": "https://api.kimi.com/coding/v1",
+        "base_url": "https://api.kimi.com/coding",
         "send_identity": False,
-        "betas": ("oauth-2025-04-20",),
+        "betas": (),
     },
     # Any other Anthropic-compatible endpoint reached with a Bearer token.
     "generic": {
@@ -594,7 +597,7 @@ class CredentialPool:
               {"name": "claude2", "provider": "anthropic",
                "credentials_path": "~/.claude/.credentials.account2.json"},
               {"name": "kimi", "provider": "kimi", "token": "sk-...",
-               "model": "kimi-k2-0711-preview"}
+               "model": "kimi-for-coding"}
             ]
 
         Each object: ``name``, ``provider`` (anthropic|kimi|generic), one of
