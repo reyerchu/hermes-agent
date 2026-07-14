@@ -328,6 +328,12 @@ def anthropic_to_openai_response(
     usage = data.get("usage") or {}
     in_tok = usage.get("input_tokens", 0) or 0
     out_tok = usage.get("output_tokens", 0) or 0
+    # Anthropic reports cached input separately; fold both into prompt_tokens so
+    # the total is honest, and surface the read portion as OpenAI's standard
+    # prompt_tokens_details.cached_tokens (else prompt caching is invisible).
+    cache_read = usage.get("cache_read_input_tokens", 0) or 0
+    cache_create = usage.get("cache_creation_input_tokens", 0) or 0
+    prompt_tokens = in_tok + cache_read + cache_create
 
     return {
         "id": response_id,
@@ -336,9 +342,10 @@ def anthropic_to_openai_response(
         "model": model,
         "choices": [{"index": 0, "message": message, "finish_reason": finish}],
         "usage": {
-            "prompt_tokens": in_tok,
+            "prompt_tokens": prompt_tokens,
             "completion_tokens": out_tok,
-            "total_tokens": in_tok + out_tok,
+            "total_tokens": prompt_tokens + out_tok,
+            "prompt_tokens_details": {"cached_tokens": cache_read},
         },
     }
 

@@ -245,6 +245,7 @@ def test_response_text_translation():
         "prompt_tokens": 10,
         "completion_tokens": 3,
         "total_tokens": 13,
+        "prompt_tokens_details": {"cached_tokens": 0},
     }
 
 
@@ -385,3 +386,22 @@ def test_add_cache_control_is_idempotent():
     tr.add_cache_control(body)
     # existing cache_control preserved (setdefault), not overwritten
     assert body["system"][0]["cache_control"] == {"type": "ephemeral", "ttl": "1h"}
+
+
+def test_response_usage_surfaces_cache_tokens():
+    data = {
+        "content": [{"type": "text", "text": "ok"}],
+        "stop_reason": "end_turn",
+        "usage": {
+            "input_tokens": 10,
+            "output_tokens": 5,
+            "cache_read_input_tokens": 900,
+            "cache_creation_input_tokens": 90,
+        },
+    }
+    out = tr.anthropic_to_openai_response(data, response_id="x", created=0, model="m")
+    u = out["usage"]
+    assert u["prompt_tokens"] == 1000  # 10 + 900 + 90 (honest total input)
+    assert u["completion_tokens"] == 5
+    assert u["total_tokens"] == 1005
+    assert u["prompt_tokens_details"]["cached_tokens"] == 900
