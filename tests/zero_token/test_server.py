@@ -10,12 +10,18 @@ from aiohttp.test_utils import TestClient, TestServer
 from zero_token import server as srv
 
 
-class _FakeStore:
-    def access_token(self):
-        return "sk-ant-oat01-TESTTOKEN"
+from zero_token.credentials import ClaudeOAuthStore, CredentialPool, _Account
 
-    def describe(self):
-        return {"source": "fake", "refreshable": True, "subscriptionType": "max"}
+
+def _pool(*accounts):
+    """Build a CredentialPool from (name, token) pairs (defaults to one account)."""
+    if not accounts:
+        accounts = (("primary", "sk-ant-oat01-TESTTOKEN"),)
+    accts = [
+        _Account(n, ClaudeOAuthStore(static_token=t, read_env_token=False))
+        for n, t in accounts
+    ]
+    return CredentialPool(accts)
 
 
 class _FakeResp:
@@ -44,6 +50,27 @@ class _CapturingClient:
         self.last_json = json
         self.last_headers = headers
         return self._resp
+
+    async def aclose(self):
+        pass
+
+
+class _RoutingClient:
+    """Fake httpx client that returns a different response per bearer token.
+
+    ``by_token`` maps the account token to (status, payload). Records the order
+    of tokens seen so tests can assert failover order.
+    """
+
+    def __init__(self, by_token: dict):
+        self._by_token = by_token
+        self.seen_tokens: list = []
+
+    async def post(self, url, json, headers, timeout):  # noqa: A002
+        tok = headers["Authorization"].removeprefix("Bearer ")
+        self.seen_tokens.append(tok)
+        status, payload = self._by_token[tok]
+        return _FakeResp(status, payload)
 
     async def aclose(self):
         pass
@@ -85,9 +112,9 @@ class _StreamingClient:
         pass
 
 
-async def _make_client(anthropic_payload, status=200, http=None):
+async def _make_client(anthropic_payload, status=200, http=None, pool=None):
     app = srv.build_app()
-    app[srv.STORE_KEY] = _FakeStore()
+    app[srv.POOL_KEY] = pool or _pool()
     fake = http or _CapturingClient(_FakeResp(status, anthropic_payload))
 
     # Replace the startup hook so it installs our fake http client.
@@ -167,30 +194,120 @@ async def test_upstream_error_is_forwarded():
 
 
 @pytest.mark.asyncio
-async def test_health_reports_credentials_when_no_auth_required():
-    client, _ = await _make_client({})
+async def test_health_reports_accounts_when_no_auth_required():
+    pool = _pool(("primary", "tok-a"), ("backup1", "tok-b"))
+    client, _ = await _make_client({}, pool=pool)
     try:
         resp = await client.get("/health")
         assert resp.status == 200
         data = await resp.json()
         assert data["ok"] is True
-        assert data["credentials"]["subscriptionType"] == "max"
+        names = [a["name"] for a in data["accounts"]]
+        assert names == ["primary", "backup1"]
+        assert data["accounts"][0]["provider"] == "anthropic"
+        assert data["accounts"][0]["cooling_down"] is False
     finally:
         await client.close()
 
 
 @pytest.mark.asyncio
-async def test_health_hides_credentials_from_unauthenticated_caller(monkeypatch):
+async def test_health_hides_accounts_from_unauthenticated_caller(monkeypatch):
     monkeypatch.setattr(srv, "AUTH_TOKEN", "s3cret")
     client, _ = await _make_client({})
     try:
         resp = await client.get("/health")  # no Authorization header
         data = await resp.json()
-        assert data == {"ok": True}  # no path, no subscription, no expiry leaked
+        assert data == {"ok": True}  # no path, no accounts leaked
         # with the right token, details come back
         resp2 = await client.get("/health", headers={"Authorization": "Bearer s3cret"})
         data2 = await resp2.json()
-        assert data2["credentials"]["subscriptionType"] == "max"
+        assert "accounts" in data2
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_failover_rotates_to_backup_on_out_of_extra_usage():
+    pool = _pool(("primary", "tok-primary"), ("backup1", "tok-backup"))
+    http = _RoutingClient({
+        "tok-primary": (
+            400,
+            {
+                "error": {
+                    "type": "invalid_request_error",
+                    "message": "You're out of extra usage. Add more at claude.ai/settings/usage",
+                }
+            },
+        ),
+        "tok-backup": (
+            200,
+            {
+                "content": [{"type": "text", "text": "FROM_BACKUP"}],
+                "stop_reason": "end_turn",
+                "usage": {"input_tokens": 1, "output_tokens": 2},
+            },
+        ),
+    })
+    client, _ = await _make_client({}, http=http, pool=pool)
+    try:
+        resp = await client.post(
+            "/v1/chat/completions",
+            json={"messages": [{"role": "user", "content": "hi"}]},
+        )
+        assert resp.status == 200
+        data = await resp.json()
+        assert data["choices"][0]["message"]["content"] == "FROM_BACKUP"
+        # primary tried first, then backup
+        assert http.seen_tokens == ["tok-primary", "tok-backup"]
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_failover_all_accounts_limited_returns_last_error():
+    pool = _pool(("primary", "tok-a"), ("backup1", "tok-b"))
+    limited = (
+        400,
+        {
+            "error": {
+                "type": "invalid_request_error",
+                "message": "You're out of extra usage.",
+            }
+        },
+    )
+    http = _RoutingClient({"tok-a": limited, "tok-b": limited})
+    client, _ = await _make_client({}, http=http, pool=pool)
+    try:
+        resp = await client.post(
+            "/v1/chat/completions",
+            json={"messages": [{"role": "user", "content": "hi"}]},
+        )
+        assert resp.status == 400
+        # both accounts were tried exactly once
+        assert sorted(http.seen_tokens) == ["tok-a", "tok-b"]
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_failover_does_not_rotate_on_non_usage_error():
+    pool = _pool(("primary", "tok-a"), ("backup1", "tok-b"))
+    http = _RoutingClient({
+        "tok-a": (
+            400,
+            {"error": {"type": "invalid_request_error", "message": "bad model"}},
+        ),
+        "tok-b": (200, {"content": [], "stop_reason": "end_turn", "usage": {}}),
+    })
+    client, _ = await _make_client({}, http=http, pool=pool)
+    try:
+        resp = await client.post(
+            "/v1/chat/completions",
+            json={"messages": [{"role": "user", "content": "hi"}]},
+        )
+        # a non-usage 400 is returned as-is; backup is NOT tried
+        assert resp.status == 400
+        assert http.seen_tokens == ["tok-a"]
     finally:
         await client.close()
 

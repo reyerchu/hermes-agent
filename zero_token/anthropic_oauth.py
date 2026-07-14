@@ -70,28 +70,35 @@ def user_agent() -> str:
 
 
 def build_headers(
-    access_token: str, extra_betas: tuple[str, ...] = ()
+    access_token: str,
+    *,
+    base_betas: tuple[str, ...] = OAUTH_BETAS,
+    extra_betas: tuple[str, ...] = (),
 ) -> dict[str, str]:
     """Build the request headers for an OAuth Messages call.
 
-    ``extra_betas`` are merged (de-duplicated, order-preserving) into the
-    ``anthropic-beta`` header — e.g. ``context-management-2025-06-27`` when the
-    body carries a ``context_management`` field.
+    ``base_betas`` are the account's beta flags (default: the Claude OAuth
+    betas). ``extra_betas`` are merged in (de-duplicated, order-preserving) —
+    e.g. ``context-management-2025-06-27`` when the body carries a
+    ``context_management`` field. If the merged set is empty, the
+    ``anthropic-beta`` header is omitted.
     """
     betas: list[str] = []
-    for b in (*OAUTH_BETAS, *extra_betas):
+    for b in (*base_betas, *extra_betas):
         if b and b not in betas:
             betas.append(b)
-    return {
+    headers = {
         "Authorization": f"Bearer {access_token}",
         "anthropic-version": ANTHROPIC_VERSION,
-        "anthropic-beta": ",".join(betas),
         "content-type": "application/json",
         "accept": "application/json",
         "user-agent": user_agent(),
         "x-app": "cli",
         "anthropic-dangerous-direct-browser-access": "true",
     }
+    if betas:
+        headers["anthropic-beta"] = ",".join(betas)
+    return headers
 
 
 def _identity_block() -> dict[str, Any]:

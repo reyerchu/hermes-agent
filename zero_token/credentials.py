@@ -109,19 +109,32 @@ class ClaudeOAuthStore:
     handlers; a lock serialises the read-refresh-persist critical section.
     """
 
-    def __init__(self, credentials_path: Path | None = None) -> None:
+    def __init__(
+        self,
+        credentials_path: Path | None = None,
+        *,
+        static_token: str | None = None,
+        read_env_token: bool = True,
+    ) -> None:
         self._path = credentials_path or default_credentials_path()
         self._lock = threading.Lock()
         self._cache: dict[str, Any] | None = None  # full file document
 
-        # A static env token short-circuits everything (no refresh, no file).
-        self._static_token: str | None = None
-        for var in _STATIC_TOKEN_ENV_VARS:
-            val = os.environ.get(var, "").strip()
-            if val:
-                self._static_token = val
-                LOG.info("using static account token from %s (refresh disabled)", var)
-                break
+        # A static token short-circuits everything (no refresh, no file). An
+        # explicit static_token wins; otherwise the env vars are consulted (only
+        # for the default/primary store — pool backup accounts pass their own).
+        self._static_token: str | None = static_token.strip() if static_token else None
+        if self._static_token:
+            LOG.info("account using an explicit static token (refresh disabled)")
+        elif read_env_token:
+            for var in _STATIC_TOKEN_ENV_VARS:
+                val = os.environ.get(var, "").strip()
+                if val:
+                    self._static_token = val
+                    LOG.info(
+                        "using static account token from %s (refresh disabled)", var
+                    )
+                    break
 
     # -- public API --------------------------------------------------------
 
@@ -376,3 +389,262 @@ class ClaudeOAuthStore:
             LOG.warning(
                 "could not persist refreshed credentials to %s: %s", self._path, exc
             )
+
+
+# --------------------------------------------------------------------------
+# multi-account failover
+# --------------------------------------------------------------------------
+
+# How long to cool down an account after it reports "out of extra usage" before
+# trying it again. Subscription usage frees on a rolling window, so this is a
+# retry interval, not a hard reset. Override with ZT_USAGE_COOLDOWN_S.
+_DEFAULT_USAGE_COOLDOWN_S = int(os.environ.get("ZT_USAGE_COOLDOWN_S", "900"))
+# Fallback cooldown for a 429 with no Retry-After.
+_DEFAULT_RATELIMIT_COOLDOWN_S = 60
+
+
+def is_usage_limited(status: int, body: dict[str, Any] | None) -> bool:
+    """True if an upstream response means "this account is out of quota".
+
+    Covers the subscription-exhaustion 400 ("You're out of extra usage") and
+    429 rate limits — both are reasons to fail over to another account.
+    """
+    if status == 429:
+        return True
+    if status == 400 and isinstance(body, dict):
+        msg = str((body.get("error") or {}).get("message", "")).lower()
+        return (
+            "out of extra usage" in msg or "usage limit" in msg or "rate limit" in msg
+        )
+    return False
+
+
+# Per-provider defaults. Accounts may override any field. All providers here
+# speak the Anthropic Messages API shape (Bearer auth), which is what the proxy
+# emits; only the endpoint, model, identity-spoof, and beta flags differ.
+PROVIDER_PRESETS: dict[str, dict[str, Any]] = {
+    # Claude Pro/Max subscription via the account OAuth token.
+    "anthropic": {
+        "base_url": "https://api.anthropic.com",
+        "send_identity": True,
+        "betas": ("claude-code-20250219", "oauth-2025-04-20"),
+    },
+    # Kimi Code subscription (Moonshot). Anthropic-compatible /v1/messages.
+    "kimi": {
+        "base_url": "https://api.kimi.com/coding/v1",
+        "send_identity": False,
+        "betas": ("oauth-2025-04-20",),
+    },
+    # Any other Anthropic-compatible endpoint reached with a Bearer token.
+    "generic": {
+        "base_url": "https://api.anthropic.com",
+        "send_identity": False,
+        "betas": (),
+    },
+}
+
+
+class _Account:
+    """One failover slot: a credential store plus its provider endpoint config."""
+
+    __slots__ = (
+        "name",
+        "store",
+        "provider",
+        "base_url",
+        "model",
+        "send_identity",
+        "betas",
+        "cooldown_until",
+        "last_error",
+    )
+
+    def __init__(
+        self,
+        name: str,
+        store: ClaudeOAuthStore,
+        *,
+        provider: str = "anthropic",
+        base_url: str | None = None,
+        model: str | None = None,
+        send_identity: bool | None = None,
+        betas: tuple[str, ...] | None = None,
+    ) -> None:
+        preset = PROVIDER_PRESETS.get(provider, PROVIDER_PRESETS["generic"])
+        self.name = name
+        self.store = store
+        self.provider = provider
+        self.base_url = (base_url or preset["base_url"]).rstrip("/")
+        self.model = model  # None => use the request's model
+        self.send_identity = (
+            preset["send_identity"] if send_identity is None else send_identity
+        )
+        self.betas = preset["betas"] if betas is None else tuple(betas)
+        self.cooldown_until = 0.0
+        self.last_error: str | None = None
+
+
+class CredentialPool:
+    """An ordered set of accounts with automatic failover on usage limits.
+
+    The first account not in cooldown is the active one. When an account hits a
+    usage/rate limit, the server calls :meth:`mark_limited`, which cools it down
+    so the next request rotates to the following account. Each account has its
+    own independent token refresh (its own credentials file).
+    """
+
+    def __init__(self, accounts: list[_Account]) -> None:
+        if not accounts:
+            raise ValueError("CredentialPool needs at least one account")
+        self._accounts = accounts
+        self._lock = threading.Lock()
+
+    @property
+    def size(self) -> int:
+        return len(self._accounts)
+
+    def accounts(self) -> list[_Account]:
+        return list(self._accounts)
+
+    def active(self) -> _Account:
+        """Return the first account not in cooldown, else the soonest-to-recover."""
+        now = time.time()
+        with self._lock:
+            for a in self._accounts:
+                if a.cooldown_until <= now:
+                    return a
+            # All cooled down — pick the one whose cooldown expires soonest so a
+            # request still has a chance rather than failing outright.
+            return min(self._accounts, key=lambda a: a.cooldown_until)
+
+    def all_cooled_down(self) -> bool:
+        now = time.time()
+        with self._lock:
+            return all(a.cooldown_until > now for a in self._accounts)
+
+    def mark_limited(
+        self, account: _Account, *, cooldown_s: float | None = None, reason: str = ""
+    ) -> None:
+        cd = _DEFAULT_USAGE_COOLDOWN_S if cooldown_s is None else cooldown_s
+        with self._lock:
+            account.cooldown_until = time.time() + cd
+            account.last_error = reason
+        LOG.warning(
+            "account %r limited (%s); cooling down %.0fs, rotating to next",
+            account.name,
+            reason or "usage",
+            cd,
+        )
+
+    def describe(self) -> list[dict[str, Any]]:
+        now = time.time()
+        out: list[dict[str, Any]] = []
+        for a in self._accounts:
+            info: dict[str, Any] = {
+                "name": a.name,
+                "provider": a.provider,
+                "base_url": a.base_url,
+            }
+            if a.model:
+                info["model"] = a.model
+            info.update(a.store.describe())
+            cd = a.cooldown_until - now
+            info["cooling_down"] = cd > 0
+            if cd > 0:
+                info["cooldown_remaining_s"] = int(cd)
+                info["last_error"] = a.last_error
+            out.append(info)
+        return out
+
+    @classmethod
+    def _account_from_config(cls, i: int, cfg: dict[str, Any]) -> _Account:
+        name = cfg.get("name") or f"account{i}"
+        provider = cfg.get("provider", "anthropic")
+        token = cfg.get("token")
+        cpath = cfg.get("credentials_path")
+        if token:
+            store = ClaudeOAuthStore(static_token=str(token), read_env_token=False)
+        elif cpath:
+            store = ClaudeOAuthStore(
+                credentials_path=Path(str(cpath)).expanduser(), read_env_token=False
+            )
+        else:
+            # Default file + env token (only sensible for the primary anthropic).
+            store = ClaudeOAuthStore()
+        betas = cfg.get("betas")
+        return _Account(
+            name,
+            store,
+            provider=provider,
+            base_url=cfg.get("base_url"),
+            model=cfg.get("model"),
+            send_identity=cfg.get("send_identity"),
+            betas=tuple(betas) if isinstance(betas, list) else None,
+        )
+
+    @classmethod
+    def from_env(cls) -> CredentialPool:
+        """Build the pool from env config.
+
+        Full control (recommended for mixed providers) via ``ZT_ACCOUNTS_JSON``,
+        a JSON array of account objects tried in order::
+
+            [
+              {"name": "claude1", "provider": "anthropic"},
+              {"name": "claude2", "provider": "anthropic",
+               "credentials_path": "~/.claude/.credentials.account2.json"},
+              {"name": "kimi", "provider": "kimi", "token": "sk-...",
+               "model": "kimi-k2-0711-preview"}
+            ]
+
+        Each object: ``name``, ``provider`` (anthropic|kimi|generic), one of
+        ``credentials_path`` / ``token`` (omit both to use the default Claude
+        credentials file + env token), and optional ``base_url`` / ``model`` /
+        ``send_identity`` / ``betas``.
+
+        Simple Claude-only alternative (no JSON): the primary is the default
+        Claude credentials file, and ``ZT_BACKUP_CREDENTIALS`` (os.pathsep-
+        separated credential files) / ``ZT_BACKUP_TOKENS`` (comma-separated
+        static tokens) add anthropic backups.
+        """
+        raw_json = os.environ.get("ZT_ACCOUNTS_JSON", "").strip()
+        if raw_json:
+            try:
+                cfgs = json.loads(raw_json)
+            except json.JSONDecodeError as exc:
+                raise CredentialsError(
+                    f"ZT_ACCOUNTS_JSON is not valid JSON: {exc}"
+                ) from exc
+            if not isinstance(cfgs, list) or not cfgs:
+                raise CredentialsError(
+                    "ZT_ACCOUNTS_JSON must be a non-empty JSON array"
+                )
+            return cls([cls._account_from_config(i, c) for i, c in enumerate(cfgs)])
+
+        # Simple Claude-only path.
+        accounts: list[_Account] = [_Account("primary", ClaudeOAuthStore())]
+        raw_paths = os.environ.get("ZT_BACKUP_CREDENTIALS", "").strip()
+        if raw_paths:
+            for i, p in enumerate(x for x in raw_paths.split(os.pathsep) if x.strip()):
+                accounts.append(
+                    _Account(
+                        f"backup{i + 1}",
+                        ClaudeOAuthStore(
+                            credentials_path=Path(p.strip()).expanduser(),
+                            read_env_token=False,
+                        ),
+                    )
+                )
+        raw_tokens = os.environ.get("ZT_BACKUP_TOKENS", "").strip()
+        if raw_tokens:
+            offset = len(accounts)
+            for i, tok in enumerate(t for t in raw_tokens.split(",") if t.strip()):
+                accounts.append(
+                    _Account(
+                        f"backup{offset + i}",
+                        ClaudeOAuthStore(
+                            static_token=tok.strip(), read_env_token=False
+                        ),
+                    )
+                )
+        return cls(accounts)

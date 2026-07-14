@@ -231,3 +231,74 @@ def test_describe_reports_expiry_and_subscription(tmp_path):
     assert info["refreshable"] is True
     assert info["subscriptionType"] == "max"
     assert 0 < info["expiresInSeconds"] <= 1800
+
+
+# --- CredentialPool -------------------------------------------------------
+
+from zero_token.credentials import CredentialPool, _Account  # noqa: E402
+
+
+def _acct(name, token, **kw):
+    return _Account(
+        name, ClaudeOAuthStore(static_token=token, read_env_token=False), **kw
+    )
+
+
+def test_pool_active_is_first_account_then_skips_cooled_down():
+    a, b = _acct("primary", "t1"), _acct("backup1", "t2")
+    pool = CredentialPool([a, b])
+    assert pool.active().name == "primary"
+    pool.mark_limited(a, cooldown_s=60, reason="usage")
+    assert pool.active().name == "backup1"
+
+
+def test_pool_all_cooled_returns_soonest_to_recover():
+    a, b = _acct("primary", "t1"), _acct("backup1", "t2")
+    pool = CredentialPool([a, b])
+    pool.mark_limited(a, cooldown_s=1000, reason="usage")
+    pool.mark_limited(b, cooldown_s=10, reason="usage")
+    assert pool.all_cooled_down() is True
+    assert pool.active().name == "backup1"  # smaller cooldown → soonest
+
+
+def test_pool_cooldown_expires(monkeypatch):
+    a, b = _acct("primary", "t1"), _acct("backup1", "t2")
+    pool = CredentialPool([a, b])
+    pool.mark_limited(a, cooldown_s=-1, reason="usage")  # already elapsed
+    assert pool.active().name == "primary"
+
+
+def test_provider_presets_kimi_endpoint_and_no_identity():
+    k = _acct("kimi", "tok", provider="kimi", model="kimi-k2-0711-preview")
+    assert k.base_url == "https://api.kimi.com/coding/v1"
+    assert k.send_identity is False
+    assert k.model == "kimi-k2-0711-preview"
+    assert k.provider == "kimi"
+
+
+def test_pool_from_env_json_builds_mixed_providers(monkeypatch, tmp_path):
+    cfg = [
+        {"name": "claude1", "provider": "anthropic", "token": "tok-claude1"},
+        {
+            "name": "kimi",
+            "provider": "kimi",
+            "token": "tok-kimi",
+            "model": "kimi-k2-0711-preview",
+        },
+    ]
+    monkeypatch.setenv("ZT_ACCOUNTS_JSON", json.dumps(cfg))
+    pool = CredentialPool.from_env()
+    accts = pool.accounts()
+    assert [a.name for a in accts] == ["claude1", "kimi"]
+    assert accts[0].provider == "anthropic"
+    assert accts[1].provider == "kimi"
+    assert accts[1].base_url == "https://api.kimi.com/coding/v1"
+    assert accts[1].model == "kimi-k2-0711-preview"
+
+
+def test_pool_from_env_backup_tokens(monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_TOKEN", "sk-ant-oat01-PRIMARY")
+    monkeypatch.setenv("ZT_BACKUP_TOKENS", "sk-ant-oat01-B1,sk-ant-oat01-B2")
+    pool = CredentialPool.from_env()
+    assert pool.size == 3
+    assert pool.active().store.access_token() == "sk-ant-oat01-PRIMARY"

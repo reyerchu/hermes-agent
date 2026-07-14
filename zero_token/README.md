@@ -66,6 +66,45 @@ For a persistent deployment use `packaging/systemd/hermes-zero-token.service`.
 | `ZT_MODEL_MAP`             | `{}`               | JSON remap of client model names → Anthropic ids.    |
 | `CLAUDE_CREDENTIALS_PATH`  | `~/.claude/.credentials.json` | Credentials file location.                |
 | `ANTHROPIC_TOKEN` / `CLAUDE_CODE_OAUTH_TOKEN` / `ANTHROPIC_OAUTH_TOKEN` | *(unset)* | Static setup-token; disables refresh. |
+| `ZT_ACCOUNTS_JSON`         | *(unset)*          | Multi-account failover config (see below).           |
+| `ZT_BACKUP_CREDENTIALS`    | *(unset)*          | Simple: `os.pathsep`-separated backup credential files. |
+| `ZT_BACKUP_TOKENS`         | *(unset)*          | Simple: comma-separated backup static tokens.        |
+| `ZT_USAGE_COOLDOWN_S`      | `900`              | Seconds to rest an account after "out of extra usage". |
+
+## Multi-account failover
+
+The proxy holds an ordered **pool** of accounts. Each request uses the first
+account not in cooldown; when an account returns *"out of extra usage"* (HTTP
+400) or a 429 rate limit, it is cooled down and the request transparently
+retries on the next account. Each account refreshes its own token independently,
+and accounts may be **different providers** (e.g. Claude subscriptions plus a
+Kimi Code subscription — all Anthropic-Messages-compatible).
+
+Configure with `ZT_ACCOUNTS_JSON` (a JSON array, tried in order):
+
+```json
+[
+  {"name": "claude1", "provider": "anthropic"},
+  {"name": "claude2", "provider": "anthropic",
+   "credentials_path": "~/.claude/.credentials.account2.json"},
+  {"name": "kimi", "provider": "kimi", "token": "sk-...",
+   "model": "kimi-k2-0711-preview"}
+]
+```
+
+Per-account fields: `name`; `provider` (`anthropic` | `kimi` | `generic`); one
+of `credentials_path` (an OAuth file that auto-refreshes) or `token` (a static
+token); optional `base_url`, `model` (override — required for a non-Claude
+provider whose model ids differ), `send_identity`, `betas`. Omit both
+`credentials_path` and `token` on the primary to use the default Claude
+credentials file plus the env token.
+
+Provider presets: `anthropic` → `api.anthropic.com` with the Claude Code
+identity block + OAuth betas; `kimi` → `api.kimi.com/coding/v1`, no identity
+block; `generic` → `api.anthropic.com`, no identity, no betas.
+
+`GET /health` (authenticated) lists every account with its provider, endpoint,
+and cooldown state.
 
 ## How the OAuth request is shaped
 
