@@ -429,6 +429,51 @@ def is_auth_error(status: int) -> bool:
     return status in (401, 403)
 
 
+def anthropic_org_id(
+    token: str,
+    *,
+    base_url: str = "https://api.anthropic.com",
+    timeout: float = 15.0,
+) -> str | None:
+    """Best-effort: the Anthropic *organization* a token bills against.
+
+    Reads the ``anthropic-organization-id`` response header from a tiny (1-token)
+    Messages call. Two credential slots with the **same** org id share one usage
+    pool — they are NOT independent failover even when the token *strings* differ
+    (e.g. a ``claude /login`` OAuth token and a ``claude setup-token`` minted from
+    the same subscription). The header is present for OAuth *and* setup tokens,
+    so it works where ``/api/oauth/profile`` (scope-gated) does not.
+
+    Returns the org id, or ``None`` if it can't be determined (network error, or
+    the endpoint doesn't emit the header — e.g. a non-Anthropic provider).
+    """
+    import httpx  # local import: keep module import-light and avoid cycles
+
+    from .anthropic_oauth import build_headers, ensure_claude_code_system
+
+    headers = build_headers(
+        token, base_betas=("claude-code-20250219", "oauth-2025-04-20")
+    )
+    body = {
+        "model": "claude-opus-4-8",
+        "max_tokens": 1,
+        "system": ensure_claude_code_system(None),
+        "messages": [{"role": "user", "content": "."}],
+    }
+    try:
+        resp = httpx.post(
+            f"{base_url.rstrip('/')}/v1/messages",
+            json=body,
+            headers=headers,
+            timeout=timeout,
+        )
+    except Exception:  # noqa: BLE001 - identity probe is best-effort
+        return None
+    # The org-id header is returned on success AND on most error responses
+    # (including "out of extra usage"), so a limited account can still be matched.
+    return resp.headers.get("anthropic-organization-id")
+
+
 # Per-provider defaults. Accounts may override any field. All providers here
 # speak the Anthropic Messages API shape (Bearer auth), which is what the proxy
 # emits; only the endpoint, model, identity-spoof, and beta flags differ.
