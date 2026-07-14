@@ -144,6 +144,12 @@ dependencies = [
 # Native Anthropic provider — only needed when provider=anthropic (not via
 # OpenRouter or other aggregators).
 anthropic = ["anthropic==0.87.0"]  # CVE-2026-34450, CVE-2026-34452
+# zero-token OAuth proxy (`python -m zero_token`) — a standalone
+# OpenAI-/Anthropic-compatible endpoint that authenticates to Anthropic with a
+# Claude CLI *account* token instead of a paid API key. Only aiohttp is extra;
+# httpx is already a core dependency. aiohttp 3.14.1 matches the pin used by the
+# messaging/slack/matrix extras (CVE-2026-34993(RCE)/47265 + others).
+zero-token = ["aiohttp==3.14.1"]
 # Web search backends — each only loaded when the user picks it as their
 # search provider (configured via `hermes tools` or config.yaml).
 exa = ["exa-py==2.10.2"]
@@ -354,7 +360,7 @@ plugins = [
 ]
 
 [tool.setuptools.packages.find]
-include = ["agent", "agent.*", "tools", "tools.*", "hermes_cli", "hermes_cli.*", "gateway", "gateway.*", "tui_gateway", "tui_gateway.*", "cron", "cron.*", "acp_adapter", "plugins", "plugins.*", "providers", "providers.*"]
+include = ["agent", "agent.*", "tools", "tools.*", "hermes_cli", "hermes_cli.*", "gateway", "gateway.*", "tui_gateway", "tui_gateway.*", "cron", "cron.*", "acp_adapter", "plugins", "plugins.*", "providers", "providers.*", "zero_token", "zero_token.*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

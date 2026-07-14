@@ -1,0 +1,57 @@
+# hermes zero-token OAuth proxy (systemd *user* service)
+#
+# A standalone OpenAI-/Anthropic-compatible endpoint that authenticates to
+# Anthropic with the Claude CLI *account* token (claude /login / setup-token)
+# instead of a paid API key. Point hermes-agent's `provider: custom` backend at
+# http://127.0.0.1:3031/v1 (see docs/zero-token-claude-oauth.md).
+#
+# Install:
+#   cp packaging/systemd/hermes-zero-token.service ~/.config/systemd/user/
+#   # edit WorkingDirectory / venv path below to match your checkout
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now hermes-zero-token
+#
+# Requires: the `zero-token` extra (aiohttp). Either install it into the hermes
+# venv (`uv pip install -e '.[zero-token]'`) or run from any venv that has
+# aiohttp + httpx.
+
+[Unit]
+Description=hermes zero-token OAuth proxy (Claude account token -> OpenAI/Anthropic API)
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+WorkingDirectory=%h/hermes-agent
+ExecStart=%h/hermes-agent/.venv/bin/python -m zero_token
+
+# --- configuration (edit to taste) ---------------------------------------
+# Bind address/port. 3031 matches the legacy claude_code_proxy default so an
+# existing hermes `model.base_url: http://127.0.0.1:3031/v1` keeps working.
+Environment=ZT_HOST=127.0.0.1
+Environment=ZT_PORT=3031
+# Default model when the client doesn't specify one.
+Environment=ZT_DEFAULT_MODEL=claude-opus-4-8
+# Shared-secret bearer token. MUST match hermes `model.api_key`. Generate with
+# `openssl rand -hex 32`. Without it the proxy is unauthenticated (it can spend
+# your Claude subscription — always set one).
+Environment=CLAUDE_PROXY_TOKEN=CHANGE_ME_openssl_rand_hex_32
+# Per-request upstream timeout (seconds). Each request is a single model turn
+# (hermes drives its own tool loop), so this can be modest.
+Environment=ZT_REQUEST_TIMEOUT=300
+Environment=LOG_LEVEL=INFO
+
+# The proxy reads ~/.claude/.credentials.json and refreshes it in place; no
+# ANTHROPIC_API_KEY is needed. To use a static setup-token instead, set:
+#   Environment=ANTHROPIC_TOKEN=sk-ant-oat01-...
+
+Restart=always
+RestartSec=5
+# Ignore SIGHUP (also enforced in-process) so a terminal hangup can't kill it.
+StandardInput=null
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

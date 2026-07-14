@@ -1,0 +1,30 @@
+# Example hermes-agent config snippet for the zero-token OAuth proxy.
+#
+# Merge the `model:` block into ~/.hermes/config.yaml. It points hermes's
+# OpenAI-compatible `custom` backend at the local zero-token proxy, which in
+# turn authenticates to Anthropic with your Claude CLI *account* token — so no
+# ANTHROPIC_API_KEY is required and requests bill against your Claude
+# subscription.
+#
+# Start the proxy first (see packaging/systemd/hermes-zero-token.service or run
+# `python -m zero_token`), then restart the hermes gateway.
+
+model:
+  # `custom` = an arbitrary OpenAI-compatible endpoint.
+  provider: custom
+  # Must match ZT_PORT (default 3031) from the proxy.
+  base_url: http://127.0.0.1:3031/v1
+  # Must equal the proxy's CLAUDE_PROXY_TOKEN. This is the auth boundary.
+  api_key: CHANGE_ME_same_as_CLAUDE_PROXY_TOKEN
+  # Any Anthropic model id the proxy will forward (vendor prefix optional).
+  default: claude-opus-4-8
+
+# Notes:
+# * The proxy is stateless w.r.t. conversation history — hermes owns context,
+#   memory, and the tool loop. Each request is one model turn, so there is no
+#   giant resumed session to blow a per-call budget (the failure mode of the
+#   old `claude -p --max-budget-usd` proxy).
+# * Streaming works, but hermes' default `streaming.enabled: false` is fine too;
+#   the proxy supports both.
+# * If the proxy's stale-timeout matters for very long single turns, raise it
+#   via ZT_REQUEST_TIMEOUT rather than here.
