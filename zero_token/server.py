@@ -32,7 +32,12 @@ import httpx
 from aiohttp import web
 
 from . import anthropic_oauth as ao
-from .credentials import CredentialPool, CredentialsError, is_usage_limited
+from .credentials import (
+    CredentialPool,
+    CredentialsError,
+    is_auth_error,
+    is_usage_limited,
+)
 from . import translate as tr
 
 LOG = logging.getLogger("zero-token.server")
@@ -66,6 +71,7 @@ HTTP_KEY: web.AppKey[httpx.AsyncClient] = web.AppKey("http", httpx.AsyncClient)
 _CREDS_COOLDOWN_S = 300.0  # account whose credentials can't be resolved
 _NET_COOLDOWN_S = 30.0  # transient network error reaching an account
 _RATELIMIT_COOLDOWN_S = 60.0  # 429 without a Retry-After
+_AUTH_COOLDOWN_S = 300.0  # upstream 401/403 — token bad, rest it and rotate
 
 _STATIC_MODELS = (
     "claude-opus-4-8",
@@ -376,7 +382,12 @@ async def _nonstream_with_failover(
             )
             last_status, last_err = status, payload
             continue
-        # A non-usage error is account-independent — return it, don't burn others.
+        if is_auth_error(status):
+            # Account-specific bad token — rest it and try the next account.
+            pool.mark_limited(acct, cooldown_s=_AUTH_COOLDOWN_S, reason=f"auth {status}")
+            last_status, last_err = status, payload
+            continue
+        # Any other error is account-independent — return it, don't burn others.
         return acct, None, status, payload
     return None, None, last_status, last_err
 
@@ -449,6 +460,10 @@ async def _open_stream_with_failover(
                 cooldown_s=cd,
                 reason=str((payload.get("error") or {}).get("message", ""))[:100],
             )
+            last_status, last_err = status, payload
+            continue
+        if is_auth_error(status):
+            pool.mark_limited(acct, cooldown_s=_AUTH_COOLDOWN_S, reason=f"auth {status}")
             last_status, last_err = status, payload
             continue
         return cm, None, acct, status, payload

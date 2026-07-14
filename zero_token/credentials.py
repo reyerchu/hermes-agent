@@ -419,6 +419,16 @@ def is_usage_limited(status: int, body: dict[str, Any] | None) -> bool:
     return False
 
 
+def is_auth_error(status: int) -> bool:
+    """True if an upstream response means "this account's token is bad".
+
+    A 401/403 is account-specific (expired/revoked/unauthorized token), so it
+    should fail over to the next account rather than be returned to the caller —
+    unlike a 400 validation error, which would fail identically on every account.
+    """
+    return status in (401, 403)
+
+
 # Per-provider defaults. Accounts may override any field. All providers here
 # speak the Anthropic Messages API shape (Bearer auth), which is what the proxy
 # emits; only the endpoint, model, identity-spoof, and beta flags differ.

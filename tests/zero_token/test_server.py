@@ -290,6 +290,29 @@ async def test_failover_all_accounts_limited_returns_last_error():
 
 
 @pytest.mark.asyncio
+async def test_failover_rotates_to_backup_on_upstream_401():
+    """A 401 (bad/expired token) is account-specific: rotate, don't return it."""
+    pool = _pool(("primary", "tok-a"), ("backup1", "tok-b"))
+    http = _RoutingClient({
+        "tok-a": (401, {"error": {"type": "authentication_error", "message": "Invalid bearer token"}}),
+        "tok-b": (200, {"content": [{"type": "text", "text": "FROM_BACKUP"}],
+                        "stop_reason": "end_turn", "usage": {"input_tokens": 1, "output_tokens": 2}}),
+    })
+    client, _ = await _make_client({}, http=http, pool=pool)
+    try:
+        resp = await client.post(
+            "/v1/chat/completions",
+            json={"messages": [{"role": "user", "content": "hi"}]},
+        )
+        assert resp.status == 200
+        data = await resp.json()
+        assert data["choices"][0]["message"]["content"] == "FROM_BACKUP"
+        assert http.seen_tokens == ["tok-a", "tok-b"]
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
 async def test_failover_does_not_rotate_on_non_usage_error():
     pool = _pool(("primary", "tok-a"), ("backup1", "tok-b"))
     http = _RoutingClient({

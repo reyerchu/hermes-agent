@@ -233,6 +233,16 @@ def test_describe_reports_expiry_and_subscription(tmp_path):
     assert 0 < info["expiresInSeconds"] <= 1800
 
 
+def test_is_auth_error():
+    from zero_token.credentials import is_auth_error
+
+    assert is_auth_error(401) is True
+    assert is_auth_error(403) is True
+    assert is_auth_error(400) is False
+    assert is_auth_error(429) is False
+    assert is_auth_error(200) is False
+
+
 # --- CredentialPool -------------------------------------------------------
 
 from zero_token.credentials import CredentialPool, _Account  # noqa: E402
