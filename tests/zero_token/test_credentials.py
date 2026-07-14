@@ -279,14 +279,26 @@ def test_pool_cooldown_expires(monkeypatch):
 
 
 def test_provider_presets_kimi_endpoint_and_no_identity():
-    k = _acct("kimi", "tok", provider="kimi", model="kimi-for-coding")
+    k = _acct("kimi", "tok", provider="kimi", model="kimi-code")
     # base_url must NOT include /v1 — the proxy appends /v1/messages itself.
     assert k.base_url == "https://api.kimi.com/coding"
     assert k.send_identity is False
-    # Kimi authenticates with a plain API key, so no OAuth beta header.
-    assert k.betas == ()
-    assert k.model == "kimi-for-coding"
+    # Kimi authenticates with a plain API key via x-api-key (not Bearer/OAuth),
+    # sends its own UA, and uses the fine-grained-tool-streaming beta.
+    assert k.auth_style == "x-api-key"
+    assert k.user_agent == "claude-code/0.1.0"
+    assert k.betas == ("fine-grained-tool-streaming-2025-05-14",)
+    assert k.supports_cache is False
+    assert k.model == "kimi-code"
     assert k.provider == "kimi"
+
+
+def test_provider_presets_anthropic_defaults():
+    a = _acct("claude", "tok")  # default provider=anthropic
+    assert a.auth_style == "bearer"
+    assert a.user_agent is None  # -> claude-cli/<version>
+    assert a.supports_cache is True
+    assert a.send_identity is True
 
 
 def test_pool_from_env_json_builds_mixed_providers(monkeypatch, tmp_path):
@@ -296,7 +308,7 @@ def test_pool_from_env_json_builds_mixed_providers(monkeypatch, tmp_path):
             "name": "kimi",
             "provider": "kimi",
             "token": "tok-kimi",
-            "model": "kimi-for-coding",
+            "model": "kimi-code",
         },
     ]
     monkeypatch.setenv("ZT_ACCOUNTS_JSON", json.dumps(cfg))
@@ -306,7 +318,7 @@ def test_pool_from_env_json_builds_mixed_providers(monkeypatch, tmp_path):
     assert accts[0].provider == "anthropic"
     assert accts[1].provider == "kimi"
     assert accts[1].base_url == "https://api.kimi.com/coding"
-    assert accts[1].model == "kimi-for-coding"
+    assert accts[1].model == "kimi-code"
 
 
 def test_pool_from_env_accounts_file(monkeypatch, tmp_path):
@@ -314,7 +326,7 @@ def test_pool_from_env_accounts_file(monkeypatch, tmp_path):
     cfg = [
         {"name": "claude1", "provider": "anthropic", "token": "tok-c1"},
         {"name": "claude2", "provider": "anthropic", "token": "tok-c2"},
-        {"name": "kimi", "provider": "kimi", "token": "tok-k", "model": "kimi-for-coding"},
+        {"name": "kimi", "provider": "kimi", "token": "tok-k", "model": "kimi-code"},
     ]
     f = tmp_path / "accounts.json"
     f.write_text(json.dumps(cfg))

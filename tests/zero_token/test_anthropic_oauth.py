@@ -14,6 +14,22 @@ def test_build_headers_uses_bearer_not_api_key():
     assert h["user-agent"].startswith("claude-cli/")
 
 
+def test_build_headers_x_api_key_style_for_kimi():
+    # Kimi Code uses a plain API key via x-api-key (not Bearer), its own UA, and
+    # no x-app / Claude-Code identity marker.
+    h = ao.build_headers(
+        "kimi-secret",
+        base_betas=("fine-grained-tool-streaming-2025-05-14",),
+        auth_style="x-api-key",
+        user_agent_override="claude-code/0.1.0",
+    )
+    assert h["x-api-key"] == "kimi-secret"
+    assert "Authorization" not in h
+    assert "x-app" not in h
+    assert h["user-agent"] == "claude-code/0.1.0"
+    assert h["anthropic-beta"] == "fine-grained-tool-streaming-2025-05-14"
+
+
 def test_build_headers_includes_oauth_betas():
     betas = ao.build_headers("t")["anthropic-beta"].split(",")
     assert "oauth-2025-04-20" in betas

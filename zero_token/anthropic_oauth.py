@@ -74,28 +74,39 @@ def build_headers(
     *,
     base_betas: tuple[str, ...] = OAUTH_BETAS,
     extra_betas: tuple[str, ...] = (),
+    auth_style: str = "bearer",
+    user_agent_override: str | None = None,
 ) -> dict[str, str]:
-    """Build the request headers for an OAuth Messages call.
+    """Build the request headers for a Messages call.
 
     ``base_betas`` are the account's beta flags (default: the Claude OAuth
     betas). ``extra_betas`` are merged in (de-duplicated, order-preserving) —
     e.g. ``context-management-2025-06-27`` when the body carries a
     ``context_management`` field. If the merged set is empty, the
     ``anthropic-beta`` header is omitted.
+
+    ``auth_style`` selects the credential header: ``"bearer"`` (Claude
+    subscription OAuth token → ``Authorization: Bearer`` + Claude-Code identity
+    headers ``x-app: cli``) or ``"x-api-key"`` (a plain API key, e.g. Kimi Code →
+    ``x-api-key`` and no ``x-app``). ``user_agent_override`` replaces the default
+    ``claude-cli/<ver>`` UA (Kimi expects ``claude-code/0.1.0``).
     """
     betas: list[str] = []
     for b in (*base_betas, *extra_betas):
         if b and b not in betas:
             betas.append(b)
     headers = {
-        "Authorization": f"Bearer {access_token}",
         "anthropic-version": ANTHROPIC_VERSION,
         "content-type": "application/json",
         "accept": "application/json",
-        "user-agent": user_agent(),
-        "x-app": "cli",
+        "user-agent": user_agent_override or user_agent(),
         "anthropic-dangerous-direct-browser-access": "true",
     }
+    if auth_style == "x-api-key":
+        headers["x-api-key"] = access_token
+    else:
+        headers["Authorization"] = f"Bearer {access_token}"
+        headers["x-app"] = "cli"  # Claude-Code identity marker (OAuth path only)
     if betas:
         headers["anthropic-beta"] = ",".join(betas)
     return headers

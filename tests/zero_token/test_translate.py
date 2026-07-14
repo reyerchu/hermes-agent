@@ -340,3 +340,48 @@ def test_stream_translator_tool_call_flow():
     assert tid == "tu_9"
     assert json.loads(args) == {"a": 1}
     assert chunks[-1]["choices"][0]["finish_reason"] == "tool_calls"
+
+
+# --- prompt-cache breakpoints (add_cache_control) -------------------------
+
+
+def test_add_cache_control_marks_system_tools_and_last_message():
+    body = {
+        "system": [
+            {"type": "text", "text": "identity"},
+            {"type": "text", "text": "big instructions"},
+        ],
+        "tools": [{"name": "t1"}, {"name": "t2"}],
+        "messages": [
+            {"role": "user", "content": "old"},
+            {"role": "user", "content": "new"},
+        ],
+    }
+    tr.add_cache_control(body)
+    # last system block cached, earlier one not
+    assert body["system"][-1]["cache_control"] == {"type": "ephemeral"}
+    assert "cache_control" not in body["system"][0]
+    # last tool cached
+    assert body["tools"][-1]["cache_control"] == {"type": "ephemeral"}
+    assert "cache_control" not in body["tools"][0]
+    # last message: string content promoted to a text block with cache_control
+    last = body["messages"][-1]["content"]
+    assert last == [{"type": "text", "text": "new", "cache_control": {"type": "ephemeral"}}]
+    # earlier message untouched
+    assert body["messages"][0]["content"] == "old"
+
+
+def test_add_cache_control_list_content_and_empty_safe():
+    body = {"messages": [{"role": "user", "content": [{"type": "text", "text": "x"}]}]}
+    tr.add_cache_control(body)
+    assert body["messages"][-1]["content"][-1]["cache_control"] == {"type": "ephemeral"}
+    # empty / missing fields must not raise
+    tr.add_cache_control({"messages": []})
+    tr.add_cache_control({})
+
+
+def test_add_cache_control_is_idempotent():
+    body = {"system": [{"type": "text", "text": "s", "cache_control": {"type": "ephemeral", "ttl": "1h"}}]}
+    tr.add_cache_control(body)
+    # existing cache_control preserved (setdefault), not overwritten
+    assert body["system"][0]["cache_control"] == {"type": "ephemeral", "ttl": "1h"}

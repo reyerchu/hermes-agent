@@ -260,6 +260,39 @@ def openai_to_anthropic_body(payload: dict[str, Any]) -> dict[str, Any]:
     return body
 
 
+def add_cache_control(body: dict[str, Any]) -> dict[str, Any]:
+    """Insert ephemeral prompt-cache breakpoints, Claude-Code style.
+
+    An agent replays the same large system prompt + tool schemas + conversation
+    prefix on every turn. Without cache breakpoints Anthropic re-bills all of it
+    as fresh input each call; with them, the repeated prefix is billed once and
+    then served as (~10%-cost) cache reads — which also drains the subscription
+    usage window far more slowly. Marks up to three breakpoints (well under
+    Anthropic's limit of four): the last system block, the last tool, and the
+    last message's final content block. Mutates and returns ``body``.
+    """
+    cc = {"type": "ephemeral"}
+
+    system = body.get("system")
+    if isinstance(system, list) and system and isinstance(system[-1], dict):
+        system[-1].setdefault("cache_control", dict(cc))
+
+    tools = body.get("tools")
+    if isinstance(tools, list) and tools and isinstance(tools[-1], dict):
+        tools[-1].setdefault("cache_control", dict(cc))
+
+    messages = body.get("messages")
+    if isinstance(messages, list) and messages and isinstance(messages[-1], dict):
+        content = messages[-1].get("content")
+        if isinstance(content, str) and content:
+            messages[-1]["content"] = [
+                {"type": "text", "text": content, "cache_control": dict(cc)}
+            ]
+        elif isinstance(content, list) and content and isinstance(content[-1], dict):
+            content[-1].setdefault("cache_control", dict(cc))
+    return body
+
+
 # --------------------------------------------------------------------------
 # response: Anthropic -> OpenAI (non-streaming)
 # --------------------------------------------------------------------------

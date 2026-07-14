@@ -70,7 +70,8 @@ For a persistent deployment use `packaging/systemd/hermes-zero-token.service`.
 | `ZT_ACCOUNTS_FILE`         | *(unset)*          | Path to a `0600` file holding the same JSON array (preferred — keeps tokens out of the systemd env). |
 | `ZT_BACKUP_CREDENTIALS`    | *(unset)*          | Simple: `os.pathsep`-separated backup credential files. |
 | `ZT_BACKUP_TOKENS`         | *(unset)*          | Simple: comma-separated backup static tokens.        |
-| `ZT_USAGE_COOLDOWN_S`      | `900`              | Seconds to rest an account after "out of extra usage". |
+| `ZT_USAGE_COOLDOWN_S`      | `900`              | Fallback rest after "out of extra usage" when no reset header is present (the proxy prefers the exact `anthropic-ratelimit-unified-reset` window). |
+| `ZT_PROMPT_CACHE`          | `1` (on)           | Inject Claude-Code-style `cache_control` breakpoints (system/tools/last message) so repeated context is billed once then served as cheap cache reads — drastically slows subscription-usage burn. Anthropic accounts only. |
 
 ## Multi-account failover
 
@@ -89,7 +90,7 @@ Configure with `ZT_ACCOUNTS_JSON` (a JSON array, tried in order):
   {"name": "claude2", "provider": "anthropic",
    "credentials_path": "~/.claude/.credentials.account2.json"},
   {"name": "kimi", "provider": "kimi", "token": "sk-...",
-   "model": "kimi-for-coding"}
+   "model": "kimi-code"}
 ]
 ```
 
@@ -100,10 +101,16 @@ provider whose model ids differ), `send_identity`, `betas`. Omit both
 `credentials_path` and `token` on the primary to use the default Claude
 credentials file plus the env token.
 
-Provider presets: `anthropic` → `api.anthropic.com` with the Claude Code
-identity block + OAuth betas; `kimi` → `api.kimi.com/coding` (a plain Kimi
-Code API key, no OAuth beta), no identity
-block; `generic` → `api.anthropic.com`, no identity, no betas.
+Provider presets: `anthropic` → `api.anthropic.com`, `Authorization: Bearer`,
+Claude Code identity block + OAuth betas, prompt caching on; `kimi` →
+`api.kimi.com/coding`, auth via **`x-api-key`** (a plain Kimi Code API key, not
+Bearer), UA `claude-code/0.1.0`, the `fine-grained-tool-streaming-2025-05-14`
+beta, model id `kimi-code` (or legacy `k2p5`), no identity block, no caching;
+`generic` → `api.anthropic.com`, Bearer, no identity, no betas.
+
+When an account returns *"out of extra usage"*, the proxy reads the exact rolling
+window reset (`anthropic-ratelimit-unified-reset`) and benches that account until
+then, rather than re-probing on a flat timer.
 
 `GET /health` (authenticated) lists every account with its provider, endpoint,
 and cooldown state.

@@ -19,6 +19,7 @@ user's Claude subscription, so treat that token as the security boundary; the
 from __future__ import annotations
 
 import asyncio
+import copy
 import hmac
 import json
 import logging
@@ -48,6 +49,16 @@ LISTEN_HOST = os.environ.get("ZT_HOST", "127.0.0.1")
 LISTEN_PORT = int(os.environ.get("ZT_PORT", "3031"))
 DEFAULT_MODEL = os.environ.get("ZT_DEFAULT_MODEL", "claude-opus-4-8").strip()
 REQUEST_TIMEOUT_S = float(os.environ.get("ZT_REQUEST_TIMEOUT", "300"))
+# Inject Claude-Code-style prompt-cache breakpoints (system/tools/last message)
+# so an agent's repeated context is billed once then served as cheap cache reads
+# — cuts subscription usage burn dramatically. On by default; only applied to
+# providers whose preset sets supports_cache (anthropic).
+PROMPT_CACHE_ENABLED = os.environ.get("ZT_PROMPT_CACHE", "1").strip().lower() not in (
+    "0",
+    "false",
+    "no",
+    "off",
+)
 # Optional hard cap on max_tokens forwarded upstream (0/empty = no cap).
 try:
     MAX_TOKENS_CAP = int(os.environ.get("ZT_MAX_TOKENS_CAP", "0"))
@@ -133,6 +144,48 @@ def _retry_after(resp: httpx.Response) -> float | None:
     return None
 
 
+# Cap so a bogus far-future reset header can't bench an account effectively
+# forever (the Claude rolling window is 5h; allow a little slack).
+_MAX_USAGE_COOLDOWN_S = 6 * 3600.0
+
+
+def _usage_cooldown_from_headers(resp: httpx.Response) -> float | None:
+    """Seconds until the unified rate-limit window resets, from the headers.
+
+    When an account is "out of extra usage", Anthropic reports the exact epoch
+    at which the (rolling 5-hour) window resets via
+    ``anthropic-ratelimit-unified-reset``. Benching the account until *then*
+    beats a flat timer that keeps re-probing an account that can't recover yet.
+    Returns None if no usable reset header is present.
+    """
+    headers = getattr(resp, "headers", None) or {}
+    for h in (
+        "anthropic-ratelimit-unified-reset",
+        "anthropic-ratelimit-unified-5h-reset",
+    ):
+        val = headers.get(h)
+        if not val:
+            continue
+        try:
+            secs = float(val) - time.time()
+        except ValueError:
+            continue
+        if secs > 0:
+            return min(secs, _MAX_USAGE_COOLDOWN_S)
+    return None
+
+
+def _usage_cooldown(resp: httpx.Response, status: int) -> float | None:
+    """Cooldown for a usage-limited response: exact window reset if the headers
+    give one, else Retry-After (429), else the pool default (None)."""
+    cd = _usage_cooldown_from_headers(resp)
+    if cd is not None:
+        return cd
+    if status == 429:
+        return _retry_after(resp) or _RATELIMIT_COOLDOWN_S
+    return None
+
+
 # --- Anthropic call helpers ----------------------------------------------
 
 
@@ -141,17 +194,24 @@ def _prepare_for_account(
 ) -> tuple[dict[str, Any], dict[str, str], str]:
     """Finalise the request body, headers, and messages URL for one account.
 
-    Applies the account's model override, endpoint, identity-spoof policy, and
-    beta flags.
+    Applies the account's model override, endpoint, identity-spoof policy, beta
+    flags, and (for cache-capable providers) prompt-cache breakpoints. Deep-copies
+    the body so per-account mutations never leak across failover attempts.
     """
-    body = dict(body)
+    body = copy.deepcopy(body)
     body["model"] = account.model or _normalise_model(body.get("model"))
     if account.send_identity:
         body["system"] = ao.ensure_claude_code_system(body.get("system"))
+    if PROMPT_CACHE_ENABLED and account.supports_cache:
+        tr.add_cache_control(body)
     if MAX_TOKENS_CAP and int(body.get("max_tokens") or 0) > MAX_TOKENS_CAP:
         body["max_tokens"] = MAX_TOKENS_CAP
     headers = ao.build_headers(
-        token, base_betas=account.betas, extra_betas=ao.body_required_betas(body)
+        token,
+        base_betas=account.betas,
+        extra_betas=ao.body_required_betas(body),
+        auth_style=account.auth_style,
+        user_agent_override=account.user_agent,
     )
     url = f"{account.base_url}{ao.ANTHROPIC_MESSAGES_PATH}"
     return body, headers, url
@@ -372,12 +432,9 @@ async def _nonstream_with_failover(
             return acct, resp.json(), 200, None
         status, payload = await _read_upstream_error(resp)
         if is_usage_limited(status, payload):
-            cd = (
-                (_retry_after(resp) or _RATELIMIT_COOLDOWN_S) if status == 429 else None
-            )
             pool.mark_limited(
                 acct,
-                cooldown_s=cd,
+                cooldown_s=_usage_cooldown(resp, status),
                 reason=str((payload.get("error") or {}).get("message", ""))[:100],
             )
             last_status, last_err = status, payload
@@ -452,12 +509,9 @@ async def _open_stream_with_failover(
         status, payload = await _read_upstream_error(resp)
         await cm.__aexit__(None, None, None)
         if is_usage_limited(status, payload):
-            cd = (
-                (_retry_after(resp) or _RATELIMIT_COOLDOWN_S) if status == 429 else None
-            )
             pool.mark_limited(
                 acct,
-                cooldown_s=cd,
+                cooldown_s=_usage_cooldown(resp, status),
                 reason=str((payload.get("error") or {}).get("message", ""))[:100],
             )
             last_status, last_err = status, payload
@@ -536,7 +590,12 @@ async def handle_models(request: web.Request) -> web.Response:
     try:
         acct = _pool(request).active()
         token = await asyncio.to_thread(acct.store.access_token)
-        headers = ao.build_headers(token, base_betas=acct.betas)
+        headers = ao.build_headers(
+            token,
+            base_betas=acct.betas,
+            auth_style=acct.auth_style,
+            user_agent_override=acct.user_agent,
+        )
         resp = await _http(request).get(
             f"{acct.base_url}{ao.ANTHROPIC_MODELS_PATH}",
             headers=headers,

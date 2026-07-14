@@ -59,7 +59,7 @@ Environment=LOG_LEVEL=INFO
 # where that file contains, e.g.:
 #   [{"name":"claude1","provider":"anthropic"},
 #    {"name":"claude2","provider":"anthropic","token":"sk-ant-oat01-..."},
-#    {"name":"kimi","provider":"kimi","token":"<KIMI_API_KEY>","model":"kimi-for-coding"}]
+#    {"name":"kimi","provider":"kimi","token":"<KIMI_API_KEY>","model":"kimi-code"}]
 #
 # Inline alternative (quoting is fragile; secrets visible via systemctl show):
 #   Environment=ZT_ACCOUNTS_JSON=[{"name":"claude1","provider":"anthropic"}, ...]

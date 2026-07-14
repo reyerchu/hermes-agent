@@ -129,6 +129,61 @@ async def _make_client(anthropic_payload, status=200, http=None, pool=None):
     return client, fake
 
 
+def test_usage_cooldown_from_reset_header():
+    import time
+
+    class R:
+        def __init__(self, headers):
+            self.headers = headers
+
+    reset = str(int(time.time()) + 1200)
+    cd = srv._usage_cooldown_from_headers(R({"anthropic-ratelimit-unified-reset": reset}))
+    assert cd is not None and 1150 < cd <= 1200
+    # 5h-reset used as fallback
+    cd2 = srv._usage_cooldown_from_headers(
+        R({"anthropic-ratelimit-unified-5h-reset": str(int(time.time()) + 600)})
+    )
+    assert cd2 is not None and 550 < cd2 <= 600
+    # no header, or a response object without .headers -> None (no crash)
+    assert srv._usage_cooldown_from_headers(R({})) is None
+    assert srv._usage_cooldown_from_headers(object()) is None
+    # a bogus far-future reset is capped
+    huge = str(int(time.time()) + 10**9)
+    assert srv._usage_cooldown_from_headers(R({"anthropic-ratelimit-unified-reset": huge})) == srv._MAX_USAGE_COOLDOWN_S
+
+
+def test_prepare_for_account_adds_cache_control_for_anthropic_only():
+    from zero_token.credentials import ClaudeOAuthStore, _Account
+
+    body = {
+        "model": "claude-opus-4-8",
+        "system": "be nice",
+        "messages": [{"role": "user", "content": "hi"}],
+    }
+    anthro = _Account(
+        "a", ClaudeOAuthStore(static_token="t", read_env_token=False)
+    )
+    out, _, _ = srv._prepare_for_account(body, "t", anthro)
+    # identity block first, and a cache breakpoint on the (last) system block
+    assert out["system"][0]["text"].startswith("You are Claude Code")
+    assert out["system"][-1]["cache_control"] == {"type": "ephemeral"}
+    assert out["messages"][-1]["content"][-1]["cache_control"] == {"type": "ephemeral"}
+    # original body untouched (deep copy)
+    assert body["system"] == "be nice"
+
+    kimi = _Account(
+        "k",
+        ClaudeOAuthStore(static_token="t", read_env_token=False),
+        provider="kimi",
+        model="kimi-code",
+    )
+    out_k, _, url_k = srv._prepare_for_account(body, "t", kimi)
+    # kimi: no identity, no cache breakpoints
+    assert out_k["system"] == "be nice"
+    assert isinstance(out_k["messages"][-1]["content"], str)
+    assert url_k == "https://api.kimi.com/coding/v1/messages"
+
+
 @pytest.mark.asyncio
 async def test_chat_completions_non_stream_happy_path():
     anthropic_resp = {

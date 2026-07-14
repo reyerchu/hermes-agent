@@ -483,21 +483,33 @@ PROVIDER_PRESETS: dict[str, dict[str, Any]] = {
         "base_url": "https://api.anthropic.com",
         "send_identity": True,
         "betas": ("claude-code-20250219", "oauth-2025-04-20"),
+        "supports_cache": True,
+        "auth_style": "bearer",
+        "user_agent": None,  # -> claude-cli/<version>
     },
     # Kimi Code subscription (Moonshot). Anthropic-compatible: the coding
     # endpoint lives at https://api.kimi.com/coding and serves /v1/messages
     # (base_url must NOT already include /v1 — the proxy appends it). Auth is a
-    # plain Kimi Code *API key* (Bearer), not an OAuth token, so no oauth beta.
+    # plain Kimi Code *API key* sent as `x-api-key` (NOT Bearer), with Kimi's own
+    # UA and the fine-grained-tool-streaming beta; no OAuth beta / identity block.
+    # Model id sent upstream is `kimi-code` (or legacy `k2p5`) — NOT the dead
+    # `kimi-for-coding` id. (Ref: linuxhsj/openclaw-zero-token kimi-coding.)
     "kimi": {
         "base_url": "https://api.kimi.com/coding",
         "send_identity": False,
-        "betas": (),
+        "betas": ("fine-grained-tool-streaming-2025-05-14",),
+        "supports_cache": False,
+        "auth_style": "x-api-key",
+        "user_agent": "claude-code/0.1.0",
     },
     # Any other Anthropic-compatible endpoint reached with a Bearer token.
     "generic": {
         "base_url": "https://api.anthropic.com",
         "send_identity": False,
         "betas": (),
+        "supports_cache": False,
+        "auth_style": "bearer",
+        "user_agent": None,
     },
 }
 
@@ -513,6 +525,9 @@ class _Account:
         "model",
         "send_identity",
         "betas",
+        "supports_cache",
+        "auth_style",
+        "user_agent",
         "cooldown_until",
         "last_error",
     )
@@ -527,6 +542,9 @@ class _Account:
         model: str | None = None,
         send_identity: bool | None = None,
         betas: tuple[str, ...] | None = None,
+        supports_cache: bool | None = None,
+        auth_style: str | None = None,
+        user_agent: str | None = None,
     ) -> None:
         preset = PROVIDER_PRESETS.get(provider, PROVIDER_PRESETS["generic"])
         self.name = name
@@ -538,6 +556,14 @@ class _Account:
             preset["send_identity"] if send_identity is None else send_identity
         )
         self.betas = preset["betas"] if betas is None else tuple(betas)
+        self.supports_cache = (
+            preset.get("supports_cache", False)
+            if supports_cache is None
+            else supports_cache
+        )
+        self.auth_style = auth_style or preset.get("auth_style", "bearer")
+        # user_agent: explicit arg wins; else the preset's (may be None -> default)
+        self.user_agent = user_agent if user_agent is not None else preset.get("user_agent")
         self.cooldown_until = 0.0
         self.last_error: str | None = None
 
@@ -638,6 +664,9 @@ class CredentialPool:
             model=cfg.get("model"),
             send_identity=cfg.get("send_identity"),
             betas=tuple(betas) if isinstance(betas, list) else None,
+            supports_cache=cfg.get("supports_cache"),
+            auth_style=cfg.get("auth_style"),
+            user_agent=cfg.get("user_agent"),
         )
 
     @classmethod
@@ -652,7 +681,7 @@ class CredentialPool:
               {"name": "claude2", "provider": "anthropic",
                "credentials_path": "~/.claude/.credentials.account2.json"},
               {"name": "kimi", "provider": "kimi", "token": "sk-...",
-               "model": "kimi-for-coding"}
+               "model": "kimi-code"}
             ]
 
         Each object: ``name``, ``provider`` (anthropic|kimi|generic), one of

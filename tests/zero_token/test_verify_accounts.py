@@ -49,7 +49,7 @@ def test_probe_pool_only_probes_anthropic(monkeypatch):
             "kimi",
             ClaudeOAuthStore(static_token="t2", read_env_token=False),
             provider="kimi",
-            model="kimi-for-coding",
+            model="kimi-code",
         ),
     ])
     rows = va.probe_pool(pool)
