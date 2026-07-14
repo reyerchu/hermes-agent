@@ -482,7 +482,13 @@ PROVIDER_PRESETS: dict[str, dict[str, Any]] = {
     "anthropic": {
         "base_url": "https://api.anthropic.com",
         "send_identity": True,
-        "betas": ("claude-code-20250219", "oauth-2025-04-20"),
+        # extended-cache-ttl enables the 1h prompt-cache TTL used to keep a chat
+        # bot's context warm across messages minutes apart.
+        "betas": (
+            "claude-code-20250219",
+            "oauth-2025-04-20",
+            "extended-cache-ttl-2025-04-11",
+        ),
         "supports_cache": True,
         "auth_style": "bearer",
         "user_agent": None,  # -> claude-cli/<version>

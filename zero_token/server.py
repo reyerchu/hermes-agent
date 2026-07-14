@@ -59,6 +59,10 @@ PROMPT_CACHE_ENABLED = os.environ.get("ZT_PROMPT_CACHE", "1").strip().lower() no
     "no",
     "off",
 )
+# Cache lifetime: "1h" keeps a chat bot's context warm across messages that
+# arrive minutes apart (the 5m default expires between turns, re-billing the
+# whole prefix every message). "5m" or "" reverts to the short default.
+PROMPT_CACHE_TTL = os.environ.get("ZT_PROMPT_CACHE_TTL", "1h").strip() or None
 # Optional hard cap on max_tokens forwarded upstream (0/empty = no cap).
 try:
     MAX_TOKENS_CAP = int(os.environ.get("ZT_MAX_TOKENS_CAP", "0"))
@@ -203,7 +207,7 @@ def _prepare_for_account(
     if account.send_identity:
         body["system"] = ao.ensure_claude_code_system(body.get("system"))
     if PROMPT_CACHE_ENABLED and account.supports_cache:
-        tr.add_cache_control(body)
+        tr.add_cache_control(body, ttl=PROMPT_CACHE_TTL)
     if MAX_TOKENS_CAP and int(body.get("max_tokens") or 0) > MAX_TOKENS_CAP:
         body["max_tokens"] = MAX_TOKENS_CAP
     headers = ao.build_headers(
@@ -284,6 +288,20 @@ async def handle_chat_completions(request: web.Request) -> web.StreamResponse:
     rid = f"chatcmpl-{uuid.uuid4().hex}"
     created = int(time.time())
 
+    # Diagnostic: how big is each request (the thing that burns the usage window)?
+    _chars = len(json.dumps(anthropic_body.get("messages") or [])) + len(
+        json.dumps(anthropic_body.get("system") or "")
+    ) + len(json.dumps(anthropic_body.get("tools") or []))
+    LOG.info(
+        "chat.req model=%s max_tokens=%s msgs=%d tools=%d ~%d chars (~%d tok)",
+        anthropic_body.get("model"),
+        anthropic_body.get("max_tokens"),
+        len(anthropic_body.get("messages") or []),
+        len(anthropic_body.get("tools") or []),
+        _chars,
+        _chars // 4,
+    )
+
     if not stream:
         acct, data, status, err = await _nonstream_with_failover(
             request, anthropic_body
@@ -293,12 +311,16 @@ async def handle_chat_completions(request: web.Request) -> web.StreamResponse:
         out = tr.anthropic_to_openai_response(
             data, response_id=rid, created=created, model=model
         )
+        u = data.get("usage") or {}
         LOG.info(
-            "chat.completions ok via %s: model=%s finish=%s out_tok=%s",
+            "chat.completions ok via %s: model=%s finish=%s in=%s cache_read=%s cache_write=%s out=%s",
             acct.name if acct else "?",
             model,
             out["choices"][0]["finish_reason"],
-            out["usage"]["completion_tokens"],
+            u.get("input_tokens"),
+            u.get("cache_read_input_tokens"),
+            u.get("cache_creation_input_tokens"),
+            u.get("output_tokens"),
         )
         return web.json_response(out)
 

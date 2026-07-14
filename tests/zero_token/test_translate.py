@@ -381,6 +381,18 @@ def test_add_cache_control_list_content_and_empty_safe():
     tr.add_cache_control({})
 
 
+def test_add_cache_control_ttl_1h():
+    body = {
+        "system": [{"type": "text", "text": "s"}],
+        "tools": [{"name": "t"}],
+        "messages": [{"role": "user", "content": "hi"}],
+    }
+    tr.add_cache_control(body, ttl="1h")
+    assert body["system"][-1]["cache_control"] == {"type": "ephemeral", "ttl": "1h"}
+    assert body["tools"][-1]["cache_control"] == {"type": "ephemeral", "ttl": "1h"}
+    assert body["messages"][-1]["content"][-1]["cache_control"] == {"type": "ephemeral", "ttl": "1h"}
+
+
 def test_add_cache_control_is_idempotent():
     body = {"system": [{"type": "text", "text": "s", "cache_control": {"type": "ephemeral", "ttl": "1h"}}]}
     tr.add_cache_control(body)

@@ -260,7 +260,7 @@ def openai_to_anthropic_body(payload: dict[str, Any]) -> dict[str, Any]:
     return body
 
 
-def add_cache_control(body: dict[str, Any]) -> dict[str, Any]:
+def add_cache_control(body: dict[str, Any], *, ttl: str | None = None) -> dict[str, Any]:
     """Insert ephemeral prompt-cache breakpoints, Claude-Code style.
 
     An agent replays the same large system prompt + tool schemas + conversation
@@ -270,8 +270,16 @@ def add_cache_control(body: dict[str, Any]) -> dict[str, Any]:
     usage window far more slowly. Marks up to three breakpoints (well under
     Anthropic's limit of four): the last system block, the last tool, and the
     last message's final content block. Mutates and returns ``body``.
+
+    ``ttl`` sets the cache lifetime (``"5m"`` default, or ``"1h"``). A chat bot's
+    turns arrive minutes apart, so the 5-minute default expires between messages
+    and every message re-bills the whole prefix; ``"1h"`` keeps it warm across a
+    conversation, which is the difference that keeps the usage window from
+    filling.
     """
-    cc = {"type": "ephemeral"}
+    cc: dict[str, Any] = {"type": "ephemeral"}
+    if ttl:
+        cc["ttl"] = ttl
 
     system = body.get("system")
     if isinstance(system, list) and system and isinstance(system[-1], dict):

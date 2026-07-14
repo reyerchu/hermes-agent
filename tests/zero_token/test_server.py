@@ -164,10 +164,11 @@ def test_prepare_for_account_adds_cache_control_for_anthropic_only():
         "a", ClaudeOAuthStore(static_token="t", read_env_token=False)
     )
     out, _, _ = srv._prepare_for_account(body, "t", anthro)
-    # identity block first, and a cache breakpoint on the (last) system block
+    # identity block first, and a 1h cache breakpoint on the (last) system block
     assert out["system"][0]["text"].startswith("You are Claude Code")
-    assert out["system"][-1]["cache_control"] == {"type": "ephemeral"}
-    assert out["messages"][-1]["content"][-1]["cache_control"] == {"type": "ephemeral"}
+    _cc = {"type": "ephemeral", "ttl": "1h"}
+    assert out["system"][-1]["cache_control"] == _cc
+    assert out["messages"][-1]["content"][-1]["cache_control"] == _cc
     # original body untouched (deep copy)
     assert body["system"] == "be nice"
 
