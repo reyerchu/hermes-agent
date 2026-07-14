@@ -299,6 +299,29 @@ def test_pool_from_env_json_builds_mixed_providers(monkeypatch, tmp_path):
     assert accts[1].model == "kimi-for-coding"
 
 
+def test_pool_from_env_accounts_file(monkeypatch, tmp_path):
+    """ZT_ACCOUNTS_FILE loads the same JSON array from a 0600 file."""
+    cfg = [
+        {"name": "claude1", "provider": "anthropic", "token": "tok-c1"},
+        {"name": "claude2", "provider": "anthropic", "token": "tok-c2"},
+        {"name": "kimi", "provider": "kimi", "token": "tok-k", "model": "kimi-for-coding"},
+    ]
+    f = tmp_path / "accounts.json"
+    f.write_text(json.dumps(cfg))
+    monkeypatch.delenv("ZT_ACCOUNTS_JSON", raising=False)
+    monkeypatch.setenv("ZT_ACCOUNTS_FILE", str(f))
+    pool = CredentialPool.from_env()
+    assert [a.name for a in pool.accounts()] == ["claude1", "claude2", "kimi"]
+    assert pool.accounts()[2].base_url == "https://api.kimi.com/coding"
+
+
+def test_pool_from_env_accounts_file_missing_raises(monkeypatch, tmp_path):
+    monkeypatch.delenv("ZT_ACCOUNTS_JSON", raising=False)
+    monkeypatch.setenv("ZT_ACCOUNTS_FILE", str(tmp_path / "nope.json"))
+    with pytest.raises(CredentialsError):
+        CredentialPool.from_env()
+
+
 def test_pool_from_env_backup_tokens(monkeypatch):
     monkeypatch.setenv("ANTHROPIC_TOKEN", "sk-ant-oat01-PRIMARY")
     monkeypatch.setenv("ZT_BACKUP_TOKENS", "sk-ant-oat01-B1,sk-ant-oat01-B2")

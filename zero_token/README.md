@@ -66,7 +66,8 @@ For a persistent deployment use `packaging/systemd/hermes-zero-token.service`.
 | `ZT_MODEL_MAP`             | `{}`               | JSON remap of client model names → Anthropic ids.    |
 | `CLAUDE_CREDENTIALS_PATH`  | `~/.claude/.credentials.json` | Credentials file location.                |
 | `ANTHROPIC_TOKEN` / `CLAUDE_CODE_OAUTH_TOKEN` / `ANTHROPIC_OAUTH_TOKEN` | *(unset)* | Static setup-token; disables refresh. |
-| `ZT_ACCOUNTS_JSON`         | *(unset)*          | Multi-account failover config (see below).           |
+| `ZT_ACCOUNTS_JSON`         | *(unset)*          | Multi-account failover config, inline JSON (see below). |
+| `ZT_ACCOUNTS_FILE`         | *(unset)*          | Path to a `0600` file holding the same JSON array (preferred — keeps tokens out of the systemd env). |
 | `ZT_BACKUP_CREDENTIALS`    | *(unset)*          | Simple: `os.pathsep`-separated backup credential files. |
 | `ZT_BACKUP_TOKENS`         | *(unset)*          | Simple: comma-separated backup static tokens.        |
 | `ZT_USAGE_COOLDOWN_S`      | `900`              | Seconds to rest an account after "out of extra usage". |

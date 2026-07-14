@@ -47,12 +47,22 @@ Environment=LOG_LEVEL=INFO
 #   Environment=ANTHROPIC_TOKEN=sk-ant-oat01-...
 #
 # Multi-account failover: when the primary account hits "out of extra usage",
-# the proxy rotates to the next account. Configure with a JSON array (primary
-# first). Providers: anthropic (Claude sub, OAuth account token), kimi (Kimi
-# Code sub, a plain API key from https://www.kimi.com/code/en), generic.
+# the proxy rotates to the next account. Configure an ordered JSON array
+# (primary first). Providers: anthropic (Claude sub, OAuth account token), kimi
+# (Kimi Code sub, a plain API key from https://www.kimi.com/code/en), generic.
 # claude2 here uses a static setup-token (claude setup-token); alternatively
 # point it at a second credentials file via "credentials_path".
-#   Environment=ZT_ACCOUNTS_JSON=[{"name":"claude1","provider":"anthropic"},{"name":"claude2","provider":"anthropic","token":"sk-ant-oat01-..."},{"name":"kimi","provider":"kimi","token":"<KIMI_API_KEY>","model":"kimi-for-coding"}]
+#
+# PREFERRED: keep the array (with its tokens) in a 0600 file and reference it,
+# so secrets stay off the systemd env / `systemctl show`:
+#   Environment=ZT_ACCOUNTS_FILE=%h/.hermes/zt-accounts.json
+# where that file contains, e.g.:
+#   [{"name":"claude1","provider":"anthropic"},
+#    {"name":"claude2","provider":"anthropic","token":"sk-ant-oat01-..."},
+#    {"name":"kimi","provider":"kimi","token":"<KIMI_API_KEY>","model":"kimi-for-coding"}]
+#
+# Inline alternative (quoting is fragile; secrets visible via systemctl show):
+#   Environment=ZT_ACCOUNTS_JSON=[{"name":"claude1","provider":"anthropic"}, ...]
 
 Restart=always
 RestartSec=5

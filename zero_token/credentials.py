@@ -605,22 +605,39 @@ class CredentialPool:
         credentials file + env token), and optional ``base_url`` / ``model`` /
         ``send_identity`` / ``betas``.
 
+        The same JSON array may instead live in a file referenced by
+        ``ZT_ACCOUNTS_FILE`` (preferred for real deployments: keep tokens in one
+        ``0600`` file rather than a systemd ``Environment=`` line, which both
+        mangles JSON quoting and exposes secrets via ``systemctl show``).
+        ``ZT_ACCOUNTS_JSON`` takes precedence if both are set.
+
         Simple Claude-only alternative (no JSON): the primary is the default
         Claude credentials file, and ``ZT_BACKUP_CREDENTIALS`` (os.pathsep-
         separated credential files) / ``ZT_BACKUP_TOKENS`` (comma-separated
         static tokens) add anthropic backups.
         """
         raw_json = os.environ.get("ZT_ACCOUNTS_JSON", "").strip()
+        source = "ZT_ACCOUNTS_JSON"
+        if not raw_json:
+            file_path = os.environ.get("ZT_ACCOUNTS_FILE", "").strip()
+            if file_path:
+                source = f"ZT_ACCOUNTS_FILE ({file_path})"
+                try:
+                    raw_json = Path(file_path).expanduser().read_text().strip()
+                except OSError as exc:
+                    raise CredentialsError(
+                        f"ZT_ACCOUNTS_FILE could not be read: {exc}"
+                    ) from exc
         if raw_json:
             try:
                 cfgs = json.loads(raw_json)
             except json.JSONDecodeError as exc:
                 raise CredentialsError(
-                    f"ZT_ACCOUNTS_JSON is not valid JSON: {exc}"
+                    f"{source} is not valid JSON: {exc}"
                 ) from exc
             if not isinstance(cfgs, list) or not cfgs:
                 raise CredentialsError(
-                    "ZT_ACCOUNTS_JSON must be a non-empty JSON array"
+                    f"{source} must be a non-empty JSON array"
                 )
             return cls([cls._account_from_config(i, c) for i, c in enumerate(cfgs)])
 
